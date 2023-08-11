@@ -6,21 +6,14 @@
 #ifdef OMP_USE
 #include <omp.h>
 #endif
-
-#define KNN_VERSION       "1.0"
-#define FILTER_RADIUS     3
-#define THRESHOLD_WEIGHT  0.02f
-#define THRESHOLD_LERP    0.66f
-#define NOISE_VAL         0.0f // get stdev image, test value = 0.32f
-#define NOISE_EPS         0.0000001f
-#define LERPC             0.16f
-#define THREADSCOUNT      2
+#include "knnimdenoiser.h"
 
 void knn_filter_usage(char* prog)
 {
     printf("KNN image denoise version %s.\n", KNN_VERSION);
     printf("usage: %s [options] in.png out.png\n", prog);
     printf("options:\n");
+    printf("  -c N.N    noise coefficient (default %f)\n", NOISE_COEF);
     printf("  -l N.N    lerpc (default %f)\n", LERPC);
     printf("  -n N.N    noise (default %f)\n", NOISE_VAL);
     printf("  -p NUM    threads count (default %d)\n", THREADSCOUNT);
@@ -230,34 +223,53 @@ void errorexit(const char *s)
     exit(EXIT_FAILURE);
 }
 
-float image_stdev(png_byte *img, int width, int height)
+float image_stdev(png_byte *img, int width, int height, int filter_radius)
 {
-    int y, x;
-    unsigned long int l;
-    float n, sum, sumdev, suml, sumdevl, gray;
+    int y, x, n, i, j, xf, yf;
+    unsigned long int l, lf;
+    float sum, dev, sumdev, sumdevl, gray, grayf;
 
-    n = 1.0f / ((float)width * (float)height);
-    sum = 0.0f;
-    sumdev = 0.0f;
     l = 0;
+    sumdev = 0.0f;
     for (y = 0; y < height; y++)
     {
-        suml = 0.0f;
         sumdevl = 0.0f;
         for (x = 0; x < width; x++)
         {
             gray = ((float)img[l] + (float)img[l + 1] + (float)img[l + 2]) / 765.0f;
-            suml += gray;
-            sumdevl += (gray * gray);
+
+            n = 0;
+            sum = 0.0f;
+            for (i = -filter_radius; i <= filter_radius; i++)
+            {
+                yf = y + i;
+                
+                if (yf < 0 || yf >= height)
+                    continue;
+
+                for (j = -filter_radius; j <= filter_radius; j++)
+                {
+                    xf = x + j;
+                    
+                    if (xf < 0 || xf >= width)
+                        continue;
+
+                    lf = (yf * width + xf) * 4;
+                    grayf = ((float)img[lf] + (float)img[lf + 1] + (float)img[lf + 2]) / 765.0f;
+                    sum += grayf;
+                    n++;
+                }               
+            }
+            sum = (n > 0) ? (sum / n) : sum;
+            dev = ((gray - sum) * (gray - sum));
+
+            sumdevl += dev;
             l += 4;
         }
-        sum += suml;
         sumdev += sumdevl;
     }
-    sum *= n;
-    sumdev *= n;
-    sumdev -= (sum * sum);
-    sumdev = (sumdev > 0.0f) ? sqrt(sumdev) : 0.0f;
+    sumdev /= (height * width);
+    sumdev = sqrt(sumdev);
 
     return sumdev;
 }
@@ -290,20 +302,24 @@ void knn_filter(png_byte *img, png_byte *img_out, int width, int height, int fil
             float color[] = { 0.0f, 0.0f, 0.0f };
 
             // Center of the filter
-            int pos = (idy * width + idx) * 4;
+            long pos = (idy * width + idx) * 4;
             float color_center[] = { (float)img[pos], (float)img[pos + 1], (float)img[pos + 2], (float)img[pos + 3] };
 
             for (int y = -filter_radius; y <= filter_radius; y++)
             {
+                int idyf = idy + y;
+
+                if (idyf < 0 || idyf >= height)
+                    continue;
+
                 for (int x = -filter_radius; x <= filter_radius; x++)
                 {
-                    int idy_y = idy + y;
-                    int idx_x = idx + x;
+                    int idxf = idx + x;
 
-                    if (idy_y < 0 || idy_y >= height || idx_x < 0 || idx_x >= width)
+                    if (idxf < 0 || idxf >= width)
                         continue;
 
-                    int curr_pos = (idy_y * width + idx_x) * 4;
+                    long curr_pos = (idyf * width + idxf) * 4;
                     float color_xy[] = { (float)img[curr_pos], (float)img[curr_pos + 1], (float)img[curr_pos + 2], (float)img[curr_pos + 3] };
 
                     float pixel_distance = pixelDistance((float)x, (float)y);
@@ -349,15 +365,19 @@ int main(int argc, char **argv)
     float threshold_weight = THRESHOLD_WEIGHT;
     float threshold_lerp = THRESHOLD_LERP;
     float noise_val = NOISE_VAL;
+    float noise_coef = NOISE_COEF;
     float lerpc = LERPC;
     int no_threads = THREADSCOUNT;
     int fhelp = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, ":l:n:p:r:t:w:h")) != -1)
+    while ((opt = getopt(argc, argv, ":c:l:n:p:r:t:w:h")) != -1)
     {
         switch(opt)
         {
+        case 'c':
+            noise_coef = atof(optarg);
+            break;
         case 'l':
             lerpc = atof(optarg);
             break;
@@ -431,7 +451,8 @@ int main(int argc, char **argv)
         // copy image array to allocated memory
         image_to_array(input_img, row_pointers, width, height);
 
-        noise_val = (noise_val > 0.0f) ? noise_val : image_stdev(input_img, width, height);
+        noise_val = (noise_val > 0.0f) ? noise_val : image_stdev(input_img, width, height, filter_radius);
+        noise_val *= noise_coef;
         noise_val = (noise_val > NOISE_EPS) ? noise_val : NOISE_EPS;
         printf("Noise: %f\n", noise_val);
 

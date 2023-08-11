@@ -24,8 +24,9 @@ usage:
 ./knnimdenoiser [options] in.png out.png
 
 options:
+  -c N.N    noise coefficient (default 3.000000)
   -l N.N    lerpc (default 0.160000)
-  -n N.N    noise (default 0.000000) # auto, noise = stdev
+  -n N.N    noise (default 0.000000)
   -p NUM    threads count (default 2)
   -r NUM    radius (default 3)
   -t N.N    threshold lerp (default 0.660000)
